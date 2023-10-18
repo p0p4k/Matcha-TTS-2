@@ -75,31 +75,15 @@ class BASECFM(torch.nn.Module, ABC):
 
         steps = 1
         while steps <= len(t_span) - 1:
-            pre_dphi_dt = self.estimator_stage_1(x, mask, mu, t, spks, cond)
-            pre_dphi_dt = pre_dphi_dt * mask
-            
-            x = x + dt * pre_dphi_dt
+            dphi_dt = self.estimator(x, mask, mu, t, spks, cond)
+
+            x = x + dt * dphi_dt
             t = t + dt
             sol.append(x)
             if steps < len(t_span) - 1:
                 dt = t_span[steps + 1] - t
             steps += 1
-        pre_dphi_dt_hifi = self.hifigan(sol[-1])
-        dphi_dt_torch = torch.zeros_like(sol[-1])
-        for i in range(pre_dphi_dt_hifi.size(0)):
-            dphi_dt = self.estimator(
-                                        pre_dphi_dt_hifi[i],
-                                        num_mels=80,
-                                        sampling_rate=22050,
-                                        hop_size=256,
-                                        win_size=1024,
-                                        n_fft=1024,
-                                        fmin=0,
-                                        fmax=8000,
-                                        center=False,
-                                        )
-            dphi_dt_torch[i][:,:] = dphi_dt[0][:,:]
-        dphi_dt_torch = dphi_dt_torch * mask
+
         return sol[-1]
 
     def compute_loss(self, x1, mask, mu, spks=None, cond=None):
@@ -130,34 +114,11 @@ class BASECFM(torch.nn.Module, ABC):
         y = (1 - (1 - self.sigma_min) * t) * z + t * x1
         u = x1 - (1 - self.sigma_min) * z
 
-        pre_dphi_dt = self.estimator_stage_1(y, mask, mu, t.squeeze(), spks)
-        pre_dphi_dt = pre_dphi_dt * mask
-        pre_dphi_dt_hifi = self.hifigan(pre_dphi_dt)
-        dphi_dt_torch = torch.zeros_like(pre_dphi_dt)
-        for i in range(pre_dphi_dt_hifi.size(0)):
-            dphi_dt = self.estimator(
-                                        pre_dphi_dt_hifi[i],
-                                        num_mels=80,
-                                        sampling_rate=22050,
-                                        hop_size=256,
-                                        win_size=1024,
-                                        n_fft=1024,
-                                        fmin=0,
-                                        fmax=8000,
-                                        center=False,
-                                        )
-
-            dphi_dt_torch[i][:,:] = dphi_dt[0][:,:]
-        dphi_dt_torch = dphi_dt_torch * mask
-        loss = F.mse_loss(
-            dphi_dt_torch, u, reduction="sum"
-            ) / (torch.sum(mask) * u.shape[1])
+        loss = F.mse_loss(self.estimator(y, mask, mu, t.squeeze(), spks), u, reduction="sum") / (
+            torch.sum(mask) * u.shape[1]
+        )
         return loss, y
 
-from matcha.hifigan.models import Generator as HiFiGAN
-from matcha.hifigan.config import v1
-from matcha.hifigan.env import AttrDict
-from matcha.hifigan.meldataset import mel_spectrogram
 
 class CFM(BASECFM):
     def __init__(self, in_channels, out_channel, cfm_params, decoder_params, n_spks=1, spk_emb_dim=64):
@@ -170,7 +131,4 @@ class CFM(BASECFM):
 
         in_channels = in_channels + (spk_emb_dim if n_spks > 1 else 0)
         # Just change the architecture of the estimator here
-        self.estimator_stage_1 = Decoder(in_channels=in_channels, out_channels=out_channel, **decoder_params)
-        self.h = AttrDict(v1)
-        self.hifigan = HiFiGAN(self.h)
-        self.estimator = mel_spectrogram
+        self.estimator = Decoder(in_channels=in_channels, out_channels=out_channel, **decoder_params)

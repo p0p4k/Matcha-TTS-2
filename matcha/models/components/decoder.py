@@ -196,6 +196,10 @@ class ConformerWrapper(ConformerBlock):
     ):
         return super().forward(x=hidden_states, mask=attention_mask.bool())
 
+from matcha.hifigan.models import Generator as HiFiGAN
+from matcha.hifigan.config import v1
+from matcha.hifigan.env import AttrDict
+from matcha.hifigan.meldataset import mel_spectrogram
 
 class Decoder(nn.Module):
     def __init__(
@@ -314,6 +318,10 @@ class Decoder(nn.Module):
 
         self.initialize_weights()
         # nn.init.normal_(self.final_proj.weight)
+
+        self.h = AttrDict(v1)
+        self.hifigan = HiFiGAN(self.h)
+        self.wav2mel = mel_spectrogram
 
     @staticmethod
     def get_block(block_type, dim, attention_head_dim, num_heads, dropout, act_fn):
@@ -439,5 +447,20 @@ class Decoder(nn.Module):
 
         x = self.final_block(x, mask_up)
         output = self.final_proj(x * mask_up)
-
-        return output * mask
+        output = output * mask
+        output_ = torch.zeros_like(output)
+        output = self.hifigan(output)
+        for i in range(output.size(0)):
+            mel_ = self.wav2mel(
+                                        output[i],
+                                        num_mels=80,
+                                        sampling_rate=22050,
+                                        hop_size=256,
+                                        win_size=1024,
+                                        n_fft=1024,
+                                        fmin=0,
+                                        fmax=8000,
+                                        center=False,
+                                    )
+            output_[i][:,:] = mel_[0][:,:]
+        return output_ * mask
