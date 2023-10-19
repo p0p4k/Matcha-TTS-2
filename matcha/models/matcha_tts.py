@@ -16,6 +16,14 @@ from matcha.utils.model import (
     generate_path,
     sequence_mask,
 )
+from matcha.hifigan.models import Generator as HiFiGAN
+from matcha.hifigan.config import v1
+from matcha.hifigan.env import AttrDict
+from matcha.hifigan.meldataset import mel_spectrogram
+
+from matcha.models.components import commons
+
+from matcha.models.components.vits_posterior import PosteriorEncoder
 
 log = utils.get_pylogger(__name__)
 
@@ -47,6 +55,19 @@ class MatchaTTS(BaseLightningClass):  # 🍵
 
         if n_spks > 1:
             self.spk_emb = torch.nn.Embedding(n_spks, spk_emb_dim)
+
+        self.h = AttrDict(v1)
+        self.hifigan = HiFiGAN(self.h)
+        self.wav2mel = mel_spectrogram
+        self.enc_spec = PosteriorEncoder(
+            n_feats,
+            n_feats,
+            n_feats,
+            5,
+            1,
+            16,
+            gin_channels=spk_emb_dim,
+        )
 
         self.encoder = TextEncoder(
             encoder.encoder_type,
@@ -130,17 +151,18 @@ class MatchaTTS(BaseLightningClass):  # 🍵
         encoder_outputs = mu_y[:, :, :y_max_length]
 
         # Generate sample tracing the probability flow
-        decoder_outputs = self.decoder(mu_y, y_mask, n_timesteps, temperature, spks)
+        decoder_outputs = self.decoder(mu_y, y_mask, n_timesteps, temperature, spks, training=False)
         decoder_outputs = decoder_outputs[:, :, :y_max_length]
-
+        output = self.hifigan(decoder_outputs)
         t = (dt.datetime.now() - t).total_seconds()
-        rtf = t * 22050 / (decoder_outputs.shape[-1] * 256)
+        rtf = t * 22050 / (output.shape[-1] * 256)
 
+        mel = self.wav2mel(output.squeeze(1), num_mels=80, sampling_rate=22050, hop_size=256, win_size=1024, n_fft=1024, fmin=0, fmax=8000, center=False)
         return {
             "encoder_outputs": encoder_outputs,
-            "decoder_outputs": decoder_outputs,
+            "decoder_outputs": mel,
             "attn": attn[:, :, :y_max_length],
-            "mel": denormalize(decoder_outputs, self.mel_mean, self.mel_std),
+            "mel": mel,
             "mel_lengths": y_lengths,
             "rtf": rtf,
         }
@@ -173,6 +195,7 @@ class MatchaTTS(BaseLightningClass):  # 🍵
         # Get encoder_outputs `mu_x` and log-scaled token durations `logw`
         mu_x, logw, x_mask = self.encoder(x, x_lengths, spks)
         y_max_length = y.shape[-1]
+        z_spec, m_spec, logs_spec, spec_mask = self.enc_spec(y, y_lengths, g=spks.unsqueeze(1).transpose(1,2))
 
         y_mask = sequence_mask(y_lengths, y_max_length).unsqueeze(1).to(x_mask)
         attn_mask = x_mask.unsqueeze(-1) * y_mask.unsqueeze(2)
@@ -226,9 +249,29 @@ class MatchaTTS(BaseLightningClass):  # 🍵
         mu_y = mu_y.transpose(1, 2)
 
         # Compute loss of the decoder
-        diff_loss, _ = self.decoder.compute_loss(x1=y, mask=y_mask, mu=mu_y, spks=spks, cond=cond)
+        diff_loss, _ = self.decoder.compute_loss(x1=z_spec, mask=y_mask, mu=mu_y, spks=spks, cond=cond, training=True)
 
-        prior_loss = torch.sum(0.5 * ((y - mu_y) ** 2 + math.log(2 * math.pi)) * y_mask)
-        prior_loss = prior_loss / (torch.sum(y_mask) * self.n_feats)
+        output_sliced, ids_slice = commons.rand_slice_segments(
+                z_spec, y_lengths , segment_size=32
+            )
+        y_slice = commons.slice_segments(
+                y, ids_slice, 32)
 
-        return dur_loss, prior_loss, diff_loss
+        output_sliced = self.hifigan(output_sliced)
+        y_hat_mel = self.wav2mel(
+                    output_sliced.squeeze(1),
+                    num_mels=80,
+                    sampling_rate=22050,
+                    hop_size=256,
+                    win_size=1024,
+                    n_fft=1024,
+                    fmin=0,
+                    fmax=8000,
+                    center=False,
+                    )
+        
+        mel_loss = F.l1_loss(y_slice, y_hat_mel)
+        # prior_loss = torch.sum(0.5 * ((y - mu_y) ** 2 + math.log(2 * math.pi)) * y_mask)
+        # prior_loss = prior_loss / (torch.sum(y_mask) * self.n_feats)
+        # prior_loss = torch.tensor(0.0, device=diff_loss.device, dtype=diff_loss.dtype)
+        return dur_loss, mel_loss, diff_loss

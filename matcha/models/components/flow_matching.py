@@ -5,6 +5,7 @@ import torch.nn.functional as F
 
 from matcha.models.components.decoder import Decoder
 from matcha.utils.pylogger import get_pylogger
+from matcha.hifigan.meldataset import mel_spectrogram
 
 log = get_pylogger(__name__)
 
@@ -30,7 +31,7 @@ class BASECFM(torch.nn.Module, ABC):
         self.estimator = None
 
     @torch.inference_mode()
-    def forward(self, mu, mask, n_timesteps, temperature=1.0, spks=None, cond=None):
+    def forward(self, mu, mask, n_timesteps, temperature=1.0, spks=None, cond=None, training=False):
         """Forward diffusion
 
         Args:
@@ -50,9 +51,9 @@ class BASECFM(torch.nn.Module, ABC):
         """
         z = torch.randn_like(mu) * temperature
         t_span = torch.linspace(0, 1, n_timesteps + 1, device=mu.device)
-        return self.solve_euler(z, t_span=t_span, mu=mu, mask=mask, spks=spks, cond=cond)
+        return self.solve_euler(z, t_span=t_span, mu=mu, mask=mask, spks=spks, cond=cond, training=training)
 
-    def solve_euler(self, x, t_span, mu, mask, spks, cond):
+    def solve_euler(self, x, t_span, mu, mask, spks, cond, training=False):
         """
         Fixed euler solver for ODEs.
         Args:
@@ -75,7 +76,7 @@ class BASECFM(torch.nn.Module, ABC):
 
         steps = 1
         while steps <= len(t_span) - 1:
-            dphi_dt = self.estimator(x, mask, mu, t, spks, cond)
+            dphi_dt = self.estimator(x, mask, mu, t, spks, cond, training=training)
 
             x = x + dt * dphi_dt
             t = t + dt
@@ -86,7 +87,7 @@ class BASECFM(torch.nn.Module, ABC):
 
         return sol[-1]
 
-    def compute_loss(self, x1, mask, mu, spks=None, cond=None):
+    def compute_loss(self, x1, mask, mu, spks=None, cond=None, training=True):
         """Computes diffusion loss
 
         Args:
@@ -110,11 +111,14 @@ class BASECFM(torch.nn.Module, ABC):
         t = torch.rand([b, 1, 1], device=mu.device, dtype=mu.dtype)
         # sample noise p(x_0)
         z = torch.randn_like(x1)
-
+                
         y = (1 - (1 - self.sigma_min) * t) * z + t * x1
         u = x1 - (1 - self.sigma_min) * z
+        # y = u * t + z
+        
+        estimator_out = self.estimator(y, mask, mu, t.squeeze(), spks, training=training)
 
-        loss = F.mse_loss(self.estimator(y, mask, mu, t.squeeze(), spks), u, reduction="sum") / (
+        loss = F.mse_loss(estimator_out, u, reduction="sum") / (
             torch.sum(mask) * u.shape[1]
         )
         return loss, y
@@ -132,3 +136,5 @@ class CFM(BASECFM):
         in_channels = in_channels + (spk_emb_dim if n_spks > 1 else 0)
         # Just change the architecture of the estimator here
         self.estimator = Decoder(in_channels=in_channels, out_channels=out_channel, **decoder_params)
+        
+        
