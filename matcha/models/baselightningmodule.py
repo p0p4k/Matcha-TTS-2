@@ -58,7 +58,7 @@ class BaseLightningClass(LightningModule, ABC):
         y, y_lengths = batch["y"], batch["y_lengths"]
         spks = batch["spks"]
 
-        dur_loss, prior_loss, diff_loss = self(
+        dur_loss, prior_loss, mel_loss, diff_loss = self(
             x=x,
             x_lengths=x_lengths,
             y=y,
@@ -70,6 +70,7 @@ class BaseLightningClass(LightningModule, ABC):
             "dur_loss": dur_loss,
             "prior_loss": prior_loss,
             "diff_loss": diff_loss,
+            "mel_loss": mel_loss,
         }
 
     def on_load_checkpoint(self, checkpoint: Dict[str, Any]) -> None:
@@ -110,6 +111,14 @@ class BaseLightningClass(LightningModule, ABC):
             logger=True,
             sync_dist=True,
         )
+        self.log(
+            "sub_loss/train_mel_loss",
+            loss_dict["mel_loss"],
+            on_step=True,
+            on_epoch=True,
+            logger=True,
+            sync_dist=True,
+        )
 
         total_loss = sum(loss_dict.values())
         self.log(
@@ -145,6 +154,14 @@ class BaseLightningClass(LightningModule, ABC):
         self.log(
             "sub_loss/val_diff_loss",
             loss_dict["diff_loss"],
+            on_step=True,
+            on_epoch=True,
+            logger=True,
+            sync_dist=True,
+        )
+        self.log(
+            "sub_loss/val_mel_loss",
+            loss_dict["mel_loss"],
             on_step=True,
             on_epoch=True,
             logger=True,

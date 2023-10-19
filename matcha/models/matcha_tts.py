@@ -271,7 +271,6 @@ class MatchaTTS(BaseLightningClass):  # 🍵
                     )
         
         mel_loss = F.l1_loss(y_slice, y_hat_mel)
-        # prior_loss = torch.sum(0.5 * ((y - mu_y) ** 2 + math.log(2 * math.pi)) * y_mask)
-        # prior_loss = prior_loss / (torch.sum(y_mask) * self.n_feats)
-        # prior_loss = torch.tensor(0.0, device=diff_loss.device, dtype=diff_loss.dtype)
-        return dur_loss, mel_loss, diff_loss
+        prior_loss = torch.sum(0.5 * ((z_spec - mu_y) ** 2 + math.log(2 * math.pi)) * y_mask)
+        prior_loss = prior_loss / (torch.sum(y_mask) * self.n_feats)
+        return dur_loss, prior_loss, mel_loss, diff_loss
