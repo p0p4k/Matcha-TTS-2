@@ -4,7 +4,7 @@ import random
 
 import torch
 
-from matcha.utils.monotonic_align import maximum_path
+import matcha.utils.monotonic_align as monotonic_align
 from matcha import utils
 from matcha.models.baselightningmodule import BaseLightningClass
 from matcha.models.components.flow_matching import CFM
@@ -26,6 +26,7 @@ from matcha.hifigan.meldataset import mel_spectrogram
 from matcha.models.components import commons
 
 from matcha.models.components.vits_posterior import PosteriorEncoder
+
 log = utils.get_pylogger(__name__)
 
 
@@ -47,29 +48,19 @@ class MatchaTTS(BaseLightningClass):  # 🍵
         super().__init__()
 
         self.save_hyperparameters(logger=False)
-        print("using e2e matcha tts")
+
         self.n_vocab = n_vocab
         self.n_spks = n_spks
         self.spk_emb_dim = spk_emb_dim
         self.n_feats = n_feats
         self.out_size = out_size
 
-        # if n_spks > 1:
-        #     self.spk_emb = torch.nn.Embedding(n_spks, spk_emb_dim)
+        if n_spks > 1:
+            self.spk_emb = torch.nn.Embedding(n_spks, spk_emb_dim)
 
-        
         self.h = AttrDict(v1)
         self.hifigan = HiFiGAN(self.h)
         self.wav2mel = mel_spectrogram
-
-        self.encoder = TextEncoder(
-            encoder.encoder_type,
-            encoder.encoder_params,
-            encoder.duration_predictor_params,
-            n_vocab,
-            n_spks,
-            spk_emb_dim,
-        )
         self.enc_spec = PosteriorEncoder(
             n_feats,
             n_feats,
@@ -78,6 +69,15 @@ class MatchaTTS(BaseLightningClass):  # 🍵
             1,
             16,
             gin_channels=spk_emb_dim,
+        )
+
+        self.encoder = TextEncoder(
+            encoder.encoder_type,
+            encoder.encoder_params,
+            encoder.duration_predictor_params,
+            n_vocab,
+            n_spks,
+            spk_emb_dim,
         )
 
         self.decoder = CFM(
@@ -129,10 +129,10 @@ class MatchaTTS(BaseLightningClass):  # 🍵
         # For RTF computation
         t = dt.datetime.now()
 
-        # if self.n_spks > 1:
-        #     # Get speaker embedding
-        #     spks = self.spk_emb(spks.long())
-        spks = spks.squeeze(2)
+        if self.n_spks > 1:
+            # Get speaker embedding
+            spks = self.spk_emb(spks.long())
+
         # Get encoder_outputs `mu_x` and log-scaled token durations `logw`
         mu_x, logw, x_mask = self.encoder(x, x_lengths, spks)
 
@@ -156,10 +156,11 @@ class MatchaTTS(BaseLightningClass):  # 🍵
         decoder_outputs = self.decoder(mu_y, y_mask, n_timesteps, temperature, spks, training=False)
         decoder_outputs = decoder_outputs[:, :, :y_max_length]
         output = self.hifigan(decoder_outputs)
-        t = (dt.datetime.now() - t).total_seconds()
-        rtf = t * 22050 / (output.shape[-1] * 256)
-
         mel = self.wav2mel(output.squeeze(1), num_mels=80, sampling_rate=22050, hop_size=256, win_size=1024, n_fft=1024, fmin=0, fmax=8000, center=False)
+
+        t = (dt.datetime.now() - t).total_seconds()
+        rtf = t * 22050 / (mel.shape[-1] * 256)
+
         return {
             "encoder_outputs": encoder_outputs,
             "decoder_outputs": mel,
@@ -167,6 +168,7 @@ class MatchaTTS(BaseLightningClass):  # 🍵
             "mel": mel,
             "mel_lengths": y_lengths,
             "rtf": rtf,
+            "audio_output":output
         }
 
     def forward(self, x, x_lengths, y, y_lengths, spks=None, out_size=None, cond=None):
@@ -190,10 +192,10 @@ class MatchaTTS(BaseLightningClass):  # 🍵
             spks (torch.Tensor, optional): speaker ids.
                 shape: (batch_size,)
         """
-        # if self.n_spks > 1:
-        #     # Get speaker embedding
-        #     spks = self.spk_emb(spks)
-        spks = spks.squeeze(2)
+        if self.n_spks > 1:
+            # Get speaker embedding
+            spks = self.spk_emb(spks)
+
         # Get encoder_outputs `mu_x` and log-scaled token durations `logw`
         mu_x, logw, x_mask = self.encoder(x, x_lengths, spks)
         y_max_length = y.shape[-1]
@@ -202,34 +204,23 @@ class MatchaTTS(BaseLightningClass):  # 🍵
         y_mask = sequence_mask(y_lengths, y_max_length).unsqueeze(1).to(x_mask)
         attn_mask = x_mask.unsqueeze(-1) * y_mask.unsqueeze(2)
 
+        # Use MAS to find most likely alignment `attn` between text and mel-spectrogram
         with torch.no_grad():
-        # negative cross-entropy
-            s_p_sq_r = torch.ones_like(mu_x) # [b, d, t]
-            # [b, 1, t_s]
-            neg_cent1 = torch.sum(
-                -0.5 * math.log(2 * math.pi)- torch.zeros_like(mu_x), [1], keepdim=True
-            )
-            # [b, t_t, d] x [b, d, t_s] = [b, t_t, t_s], z_p: [b,d,t]
-            # neg_cent2 = torch.matmul(-0.5 * (z_p**2).transpose(1, 2), s_p_sq_r)
-            neg_cent2 = torch.einsum("bdt, bds -> bts", -0.5 * (z_spec**2), s_p_sq_r)
-            # [b, t_t, d] x [b, d, t_s] = [b, t_t, t_s]
-            # neg_cent3 = torch.matmul(z_p.transpose(1, 2), (m_p * s_p_sq_r))
-            neg_cent3 = torch.einsum("bdt, bds -> bts", z_spec, (mu_x * s_p_sq_r))
-            neg_cent4 = torch.sum(
-                -0.5 * (mu_x**2) * s_p_sq_r, [1], keepdim=True
-            )  # [b, 1, t_s]
-            neg_cent = neg_cent1 + neg_cent2 + neg_cent3 + neg_cent4
-            attn_mask = torch.unsqueeze(x_mask, 2) * torch.unsqueeze(y_mask, -1)
-            from matcha.utils.monotonic_align_vits import maximum_path
-            attn = (
-                maximum_path(neg_cent, attn_mask.squeeze(1)).unsqueeze(1).detach()
-            )
+            const = -0.5 * math.log(2 * math.pi) * self.n_feats
+            factor = -0.5 * torch.ones(mu_x.shape, dtype=mu_x.dtype, device=mu_x.device)
+            y_square = torch.matmul(factor.transpose(1, 2), z_spec**2)
+            y_mu_double = torch.matmul(2.0 * (factor * mu_x).transpose(1, 2), z_spec)
+            mu_square = torch.sum(factor * (mu_x**2), 1).unsqueeze(-1)
+            log_prior = y_square - y_mu_double + mu_square + const
+
+            attn = monotonic_align.maximum_path(log_prior, attn_mask.squeeze(1))
+            attn = attn.detach()
 
         # Compute loss between predicted log-scaled durations and those obtained from MAS
         # refered to as prior loss in the paper
-        logw_ = torch.log(1e-8 + attn.sum(2)) * x_mask
+        logw_ = torch.log(1e-8 + torch.sum(attn.unsqueeze(1), -1)) * x_mask
         dur_loss = duration_loss(logw, logw_, x_lengths)
-        attn = attn.squeeze(1).transpose(1,2)
+
         # Cut a small segment of mel-spectrogram in order to increase batch size
         #   - "Hack" taken from Grad-TTS, in case of Grad-TTS, we cannot train batch size 32 on a 24GB GPU without it
         #   - Do not need this hack for Matcha-TTS, but it works with it as well
@@ -254,7 +245,7 @@ class MatchaTTS(BaseLightningClass):  # 🍵
             y_cut_mask = sequence_mask(y_cut_lengths).unsqueeze(1).to(y_mask)
 
             attn = attn_cut
-            y = y_cut
+            z_spec = y_cut
             y_mask = y_cut_mask
 
         # Align encoded text with mel-spectrogram and get mu_y segment
@@ -282,6 +273,7 @@ class MatchaTTS(BaseLightningClass):  # 🍵
                     fmax=8000,
                     center=False,
                     )
+        
         denorm_y = denormalize(y_slice, self.mel_mean, self.mel_std)
         mel_loss = F.l1_loss(denorm_y, y_hat_mel)
         # prior_loss = torch.sum(0.5 * ((z_spec - mu_y) ** 2 + math.log(2 * math.pi)) * y_mask)
