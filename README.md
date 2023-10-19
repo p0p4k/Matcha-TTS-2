@@ -5,6 +5,8 @@
 ## 🍵 Matcha-TTS-2: A fast E2E TTS architecture with conditional flow matching (not fast enough for training yet xD) 
 
 [x] added experimental E2E TTS support; use min_memory config for training
+![image](https://github.com/p0p4k/Matcha-TTS-2/assets/8834712/761393aa-343b-4640-b89e-575193e2f7b4)
+
 ### [Shivam Mehta](https://www.kth.se/profile/smehta), [Ruibo Tu](https://www.kth.se/profile/ruibo), [Jonas Beskow](https://www.kth.se/profile/beskow), [Éva Székely](https://www.kth.se/profile/szekely), and [Gustav Eje Henter](https://people.kth.se/~ghe/)
 
 [![python](https://img.shields.io/badge/-Python_3.10-blue?logo=python&logoColor=white)](https://www.python.org/downloads/release/python-3100/)
