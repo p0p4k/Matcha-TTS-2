@@ -164,7 +164,7 @@ class MatchaTTS(BaseLightningClass):  # 🍵
 
         m_spec = torch.split(decoder_outputs, 80, dim=1)[0]
         logs_spec = torch.split(decoder_outputs, 80, dim=1)[1]
-        z_spec = torch.randn_like(m_spec)
+        z_spec = m_spec + torch.randn_like(m_spec) * torch.exp(logs_spec)
 
         hifigan_out = self.hifigan(z_spec)
         mel = self.wav2mel(hifigan_out.squeeze(1), num_mels=80, sampling_rate=22050, hop_size=256, win_size=1024, n_fft=1024, fmin=0, fmax=8000, center=False)
@@ -177,7 +177,7 @@ class MatchaTTS(BaseLightningClass):  # 🍵
 
         return {
             "encoder_outputs": encoder_outputs,
-            "decoder_outputs": decoder_outputs,
+            "decoder_outputs": mel,
             "attn": attn[:, :, :y_max_length],
             # "mel": mel
             "mel": denormalize(mel, self.mel_mean, self.mel_std),
@@ -214,6 +214,7 @@ class MatchaTTS(BaseLightningClass):  # 🍵
 
         mu_x, log_x, logw, x_mask = self.encoder(x, x_lengths, spks)
         x_cat = torch.cat([mu_x, log_x], dim=1)
+        
         y_max_length = y.shape[-1]
         z_spec, m_spec, logs_spec, spec_mask = self.enc_spec(y, y_lengths, g=spks.unsqueeze(1).transpose(1,2))
         z_spec = z_spec * spec_mask
@@ -278,7 +279,7 @@ class MatchaTTS(BaseLightningClass):  # 🍵
 
         # Compute loss of the decoder
         mu_y_cat = torch.cat([mu_y, log_y], dim=1)
-        # z_spec_cat = torch.cat([m_spec, logs_spec], dim=1)
+        z_spec_cat = torch.cat([m_spec, logs_spec], dim=1)
 
         diff_loss, _ = self.decoder.compute_loss(x1=mu_y_cat, mask=y_mask, mu=z_spec_cat, spks=spks, cond=cond)
 
@@ -307,6 +308,7 @@ class MatchaTTS(BaseLightningClass):  # 🍵
                     )
 
         # denorm_y = denormalize(y_slice, self.mel_mean, self.mel_std)
+        y_hat_mel = normalize(y_hat_mel, self.mel_mean, self.mel_std)
         mel_loss = F.l1_loss(y_slice, y_hat_mel) * 45.0
         
         return dur_loss, prior_loss, diff_loss, mel_loss, y_hat_mel, y_slice
