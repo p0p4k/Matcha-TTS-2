@@ -281,7 +281,7 @@ class MatchaTTS(BaseLightningClass):  # 🍵
         mu_y_cat = torch.cat([mu_y, log_y], dim=1)
         z_spec_cat = torch.cat([m_spec, logs_spec], dim=1)
 
-        diff_loss, _ = self.decoder.compute_loss(x1=mu_y_cat, mask=y_mask, mu=z_spec_cat, spks=spks, cond=cond)
+        diff_loss, _ = self.decoder.compute_loss(x1=z_spec_cat, mask=y_mask, mu=mu_y_cat, spks=spks, cond=cond)
 
         prior_loss = torch.sum(0.5 * ((z_spec_cat - mu_y_cat) ** 2 + math.log(2 * math.pi)) * y_mask)
         prior_loss = prior_loss / (torch.sum(y_mask) * self.n_feats)
