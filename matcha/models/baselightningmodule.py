@@ -56,9 +56,10 @@ class BaseLightningClass(LightningModule, ABC):
     def get_losses(self, batch):
         x, x_lengths = batch["x"], batch["x_lengths"]
         y, y_lengths = batch["y"], batch["y_lengths"]
+        
         spks = batch["spks"]
-
-        dur_loss, prior_loss, mel_loss, diff_loss = self(
+        # print("y", y.shape)
+        dur_loss, prior_loss, diff_loss, mel_loss, y_hat_mel, y_slice = self(
             x=x,
             x_lengths=x_lengths,
             y=y,
@@ -66,18 +67,25 @@ class BaseLightningClass(LightningModule, ABC):
             spks=spks,
             out_size=self.out_size,
         )
-        return {
+        return (
+            {
             "dur_loss": dur_loss,
             "prior_loss": prior_loss,
             "diff_loss": diff_loss,
             "mel_loss": mel_loss,
-        }
+            },
+            {
+            "y_hat_mel": y_hat_mel,
+            "y_slice": y_slice,
+            }
+            )
 
     def on_load_checkpoint(self, checkpoint: Dict[str, Any]) -> None:
         self.ckpt_loaded_epoch = checkpoint["epoch"]  # pylint: disable=attribute-defined-outside-init
 
     def training_step(self, batch: Any, batch_idx: int):
-        loss_dict = self.get_losses(batch)
+        loss_dict, plot_dict = self.get_losses(batch)
+        loss_dict
         self.log(
             "step",
             float(self.global_step),
@@ -130,11 +138,22 @@ class BaseLightningClass(LightningModule, ABC):
             prog_bar=True,
             sync_dist=True,
         )
-
+        self.logger.experiment.add_image(
+                    f"generated_slice/train_step",
+                    plot_tensor(plot_dict["y_hat_mel"].squeeze().detach().cpu()[0].squeeze()),
+                    self.current_epoch,
+                    dataformats="HWC",
+                )
+        self.logger.experiment.add_image(
+                    f"real_slice/train_step",
+                    plot_tensor(plot_dict["y_slice"].squeeze().detach().cpu()[0].squeeze()),
+                    self.current_epoch,
+                    dataformats="HWC",
+                )
         return {"loss": total_loss, "log": loss_dict}
 
     def validation_step(self, batch: Any, batch_idx: int):
-        loss_dict = self.get_losses(batch)
+        loss_dict, plot_dict = self.get_losses(batch)
         self.log(
             "sub_loss/val_dur_loss",
             loss_dict["dur_loss"],
@@ -179,11 +198,35 @@ class BaseLightningClass(LightningModule, ABC):
             sync_dist=True,
         )
 
+        self.logger.experiment.add_image(
+                    f"generated_slice/val",
+                    plot_tensor(plot_dict["y_hat_mel"].squeeze().cpu()[0]),
+                    self.current_epoch,
+                    dataformats="HWC",
+                )
+        self.logger.experiment.add_image(
+                    f"real_slice/val",
+                    plot_tensor(plot_dict["y_slice"].squeeze().cpu()[0]),
+                    self.current_epoch,
+                    dataformats="HWC",
+                )
         return total_loss
 
     def on_validation_end(self) -> None:
         if self.trainer.is_global_zero:
             one_batch = next(iter(self.trainer.val_dataloaders))
+            # print("one_batch", one_batch["x"].shape, one_batch["y"].shape)
+            # with torch.no_grad():
+            #     self.enccodec.eval()
+                
+            #     self.enccodec.model.to(one_batch["x"].device)
+            #     one_batch["y"], _, _ = self.enccodec(one_batch["y"], return_encoded = True)
+            # one_batch["y_lengths"] = torch.ceil(one_batch["y_lengths"] / 320).long()
+            # if one_batch["y_lengths"].max()%2 == 1:
+            #     one_batch["y_lengths"] = one_batch["y_lengths"] - 1
+            #     one_batch["y"] = one_batch["y"][:,:,:-1]
+            # one_batch["y"] = one_batch["y"].squeeze(1).transpose(1,2)
+
             if self.current_epoch == 0:
                 log.debug("Plotting original samples")
                 for i in range(2):
