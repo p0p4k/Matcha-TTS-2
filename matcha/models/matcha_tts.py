@@ -225,7 +225,9 @@ class MatchaTTS(BaseLightningClass):  # 🍵
             neg_cent1 = torch.sum(
                 -0.5 * math.log(2 * math.pi)- torch.zeros_like(mu_x), [1], keepdim=True
             )
-
+            # s_p_sq_r = torch.exp(-2 * log_x) # [b, d, t]
+            # neg_cent1 = torch.sum(-0.5 * math.log(2 * math.pi) - log_x, [1], keepdim=True) # [b, 1, t_s]
+      
             neg_cent2 = torch.einsum("bdt, bds -> bts", -0.5 * (z_spec**2), s_p_sq_r)
             neg_cent3 = torch.einsum("bdt, bds -> bts", z_spec, (mu_x * s_p_sq_r))
             neg_cent4 = torch.sum(
