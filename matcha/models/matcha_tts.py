@@ -213,25 +213,27 @@ class MatchaTTS(BaseLightningClass):  # 🍵
         # Get encoder_outputs `mu_x` and log-scaled token durations `logw`
 
         mu_x, log_x, logw, x_mask = self.encoder(x, x_lengths, spks)
+        x_cat = torch.cat([mu_x, log_x], dim=1)
         y_max_length = y.shape[-1]
         z_spec, m_spec, logs_spec, spec_mask = self.enc_spec(y, y_lengths, g=spks.unsqueeze(1).transpose(1,2))
         z_spec = z_spec * spec_mask
+        z_spec_cat = torch.cat([m_spec, logs_spec], dim=1)
         y_mask = sequence_mask(y_lengths, y_max_length).unsqueeze(1).to(x_mask)
         attn_mask = x_mask.unsqueeze(-1) * y_mask.unsqueeze(2)
 
         with torch.no_grad():
         # negative cross-entropy
-            s_p_sq_r = torch.ones_like(mu_x) # [b, d, t]
+            s_p_sq_r = torch.ones_like(x_cat) # [b, d, t]
             neg_cent1 = torch.sum(
-                -0.5 * math.log(2 * math.pi)- torch.zeros_like(mu_x), [1], keepdim=True
+                -0.5 * math.log(2 * math.pi)- torch.zeros_like(x_cat), [1], keepdim=True
             )
             # s_p_sq_r = torch.exp(-2 * log_x) # [b, d, t]
             # neg_cent1 = torch.sum(-0.5 * math.log(2 * math.pi) - log_x, [1], keepdim=True) # [b, 1, t_s]
       
-            neg_cent2 = torch.einsum("bdt, bds -> bts", -0.5 * (z_spec**2), s_p_sq_r)
-            neg_cent3 = torch.einsum("bdt, bds -> bts", z_spec, (mu_x * s_p_sq_r))
+            neg_cent2 = torch.einsum("bdt, bds -> bts", -0.5 * (z_spec_cat**2), s_p_sq_r)
+            neg_cent3 = torch.einsum("bdt, bds -> bts", z_spec_cat, (x_cat * s_p_sq_r))
             neg_cent4 = torch.sum(
-                -0.5 * (mu_x**2) * s_p_sq_r, [1], keepdim=True
+                -0.5 * (x_cat**2) * s_p_sq_r, [1], keepdim=True
             )  
             neg_cent = neg_cent1 + neg_cent2 + neg_cent3 + neg_cent4
             attn_mask = torch.unsqueeze(x_mask, 2) * torch.unsqueeze(y_mask, -1)
@@ -276,7 +278,7 @@ class MatchaTTS(BaseLightningClass):  # 🍵
 
         # Compute loss of the decoder
         mu_y_cat = torch.cat([mu_y, log_y], dim=1)
-        z_spec_cat = torch.cat([m_spec, logs_spec], dim=1)
+        # z_spec_cat = torch.cat([m_spec, logs_spec], dim=1)
 
         diff_loss, _ = self.decoder.compute_loss(x1=mu_y_cat, mask=y_mask, mu=z_spec_cat, spks=spks, cond=cond)
 
