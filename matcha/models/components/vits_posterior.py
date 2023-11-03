@@ -29,7 +29,7 @@ class PosteriorEncoder(nn.Module):
                               dilation_rate,
                               n_layers,
                               gin_channels=gin_channels)
-        self.proj = nn.Conv1d(hidden_channels, out_channels * 2, 1)
+        self.proj = nn.Conv1d(hidden_channels, out_channels, 1)
 
     def forward(self, x, x_lengths, g=None):
         x_mask = torch.unsqueeze(commons.sequence_mask(x_lengths, x.size(2)),
@@ -37,6 +37,7 @@ class PosteriorEncoder(nn.Module):
         x = self.pre(x) * x_mask
         x = self.enc(x, x_mask, g=g)
         stats = self.proj(x) * x_mask
-        m, logs = torch.split(stats, self.out_channels, dim=1)
-        z = (m + torch.randn_like(m) * torch.exp(logs)) * x_mask
-        return z, m, logs, x_mask
+        # m, logs = torch.split(stats, self.out_channels, dim=1)
+        # z = (m + torch.randn_like(m) * torch.exp(logs)) * x_mask
+        # z = m * x_mask
+        return stats, x_mask

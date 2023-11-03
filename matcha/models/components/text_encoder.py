@@ -377,7 +377,7 @@ class TextEncoder(nn.Module):
         )
 
         self.proj_m = torch.nn.Conv1d(self.n_channels + (spk_emb_dim if n_spks > 1 else 0), self.n_feats, 1)
-        self.proj_v = torch.nn.Conv1d(self.n_channels + (spk_emb_dim if n_spks > 1 else 0), self.n_feats, 1)
+        # self.proj_v = torch.nn.Conv1d(self.n_channels + (spk_emb_dim if n_spks > 1 else 0), self.n_feats, 1)
 
         self.proj_w = DurationPredictor(
             self.n_channels + (spk_emb_dim if n_spks > 1 else 0),
@@ -412,14 +412,14 @@ class TextEncoder(nn.Module):
         x = self.prenet(x, x_mask)
         if self.n_spks > 1:
             x = torch.cat([x, spks.unsqueeze(-1).repeat(1, 1, x.shape[-1])], dim=1)
-        # x_dp = torch.detach(x)
-        # x_dp = self.encoder_dp(x_dp, x_mask)
+        x_dp = torch.detach(x)
+        x_dp = self.encoder_dp(x_dp, x_mask)
 
         x = self.encoder(x, x_mask)
         mu = self.proj_m(x) * x_mask
-        logs = self.proj_v(x) * x_mask
+        # logs = self.proj_v(x) * x_mask
 
-        x_dp = torch.detach(x)
+        # x_dp = torch.detach(x)
         logw = self.proj_w(x_dp, x_mask)
 
-        return mu, logs, logw, x_mask
+        return mu, logw, x_mask

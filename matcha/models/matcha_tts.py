@@ -81,8 +81,8 @@ class MatchaTTS(BaseLightningClass):  # 🍵
             gin_channels=spk_emb_dim,
         )
         self.decoder = CFM(
-            in_channels=2 * encoder.encoder_params.n_feats * 2,
-            out_channel=encoder.encoder_params.n_feats * 2,
+            in_channels=2 * encoder.encoder_params.n_feats,
+            out_channel=encoder.encoder_params.n_feats,
             cfm_params=cfm,
             decoder_params=decoder,
             n_spks=n_spks,
@@ -134,7 +134,7 @@ class MatchaTTS(BaseLightningClass):  # 🍵
         #     spks = self.spk_emb(spks.long())
         spks = spks.squeeze(2)
         # Get encoder_outputs `mu_x` and log-scaled token durations `logw`
-        mu_x, log_x, logw, x_mask = self.encoder(x, x_lengths, spks)
+        mu_x, logw, x_mask = self.encoder(x, x_lengths, spks)
 
         w = torch.exp(logw) * x_mask
         w_ceil = torch.ceil(w) * length_scale
@@ -150,23 +150,14 @@ class MatchaTTS(BaseLightningClass):  # 🍵
         # Align encoded text and get mu_y
         mu_y = torch.matmul(attn.squeeze(1).transpose(1, 2), mu_x.transpose(1, 2))
         mu_y = mu_y.transpose(1, 2)
-        log_y = torch.matmul(attn.squeeze(1).transpose(1, 2), log_x.transpose(1, 2))
-        log_y = log_y.transpose(1, 2)
 
-        mu_y_cat = torch.cat([mu_y, log_y], dim=1)
-        encoder_outputs = mu_y_cat[:, :, :y_max_length]
-
-
+        encoder_outputs = mu_y[:, :, :y_max_length_]
 
         # Generate sample tracing the probability flow
-        decoder_outputs = self.decoder(mu_y_cat, y_mask, n_timesteps, temperature, spks)
-        decoder_outputs = decoder_outputs[:, :, :y_max_length]
+        decoder_outputs = self.decoder(encoder_outputs, y_mask, n_timesteps, temperature, spks)
+        decoder_outputs = decoder_outputs[:, :, :y_max_length_]
 
-        m_spec = torch.split(decoder_outputs, 80, dim=1)[0]
-        logs_spec = torch.split(decoder_outputs, 80, dim=1)[1]
-        z_spec = m_spec + torch.randn_like(m_spec) * torch.exp(logs_spec)
-
-        hifigan_out = self.hifigan(z_spec)
+        hifigan_out = self.hifigan(decoder_outputs)
         mel = self.wav2mel(hifigan_out.squeeze(1), num_mels=80, sampling_rate=22050, hop_size=256, win_size=1024, n_fft=1024, fmin=0, fmax=8000, center=False)
         # normalize mel
         
@@ -212,29 +203,27 @@ class MatchaTTS(BaseLightningClass):  # 🍵
         spks = spks.squeeze(2)
         # Get encoder_outputs `mu_x` and log-scaled token durations `logw`
 
-        mu_x, log_x, logw, x_mask = self.encoder(x, x_lengths, spks)
-        x_cat = torch.cat([mu_x, log_x], dim=1)
+        mu_x, logw, x_mask = self.encoder(x, x_lengths, spks)
         
         y_max_length = y.shape[-1]
-        z_spec, m_spec, logs_spec, spec_mask = self.enc_spec(y, y_lengths, g=spks.unsqueeze(1).transpose(1,2))
+        z_spec, spec_mask = self.enc_spec(y, y_lengths, g=spks.unsqueeze(1).transpose(1,2))
         z_spec = z_spec * spec_mask
-        z_spec_cat = torch.cat([m_spec, logs_spec], dim=1)
         y_mask = sequence_mask(y_lengths, y_max_length).unsqueeze(1).to(x_mask)
         attn_mask = x_mask.unsqueeze(-1) * y_mask.unsqueeze(2)
 
         with torch.no_grad():
         # negative cross-entropy
-            s_p_sq_r = torch.ones_like(x_cat) # [b, d, t]
+            s_p_sq_r = torch.ones_like(mu_x) # [b, d, t]
             neg_cent1 = torch.sum(
-                -0.5 * math.log(2 * math.pi)- torch.zeros_like(x_cat), [1], keepdim=True
+                -0.5 * math.log(2 * math.pi)- torch.zeros_like(mu_x), [1], keepdim=True
             )
             # s_p_sq_r = torch.exp(-2 * log_x) # [b, d, t]
             # neg_cent1 = torch.sum(-0.5 * math.log(2 * math.pi) - log_x, [1], keepdim=True) # [b, 1, t_s]
       
-            neg_cent2 = torch.einsum("bdt, bds -> bts", -0.5 * (z_spec_cat**2), s_p_sq_r)
-            neg_cent3 = torch.einsum("bdt, bds -> bts", z_spec_cat, (x_cat * s_p_sq_r))
+            neg_cent2 = torch.einsum("bdt, bds -> bts", -0.5 * (z_spec**2), s_p_sq_r)
+            neg_cent3 = torch.einsum("bdt, bds -> bts", z_spec, (mu_x * s_p_sq_r))
             neg_cent4 = torch.sum(
-                -0.5 * (x_cat**2) * s_p_sq_r, [1], keepdim=True
+                -0.5 * (mu_x**2) * s_p_sq_r, [1], keepdim=True
             )  
             neg_cent = neg_cent1 + neg_cent2 + neg_cent3 + neg_cent4
             attn_mask = torch.unsqueeze(x_mask, 2) * torch.unsqueeze(y_mask, -1)
@@ -247,56 +236,28 @@ class MatchaTTS(BaseLightningClass):  # 🍵
         dur_loss = duration_loss(logw, logw_, x_lengths)
         attn = attn.squeeze(1).transpose(1,2)
 
-        if not isinstance(out_size, type(None)):
-            max_offset = (y_lengths - out_size).clamp(0)
-            offset_ranges = list(zip([0] * max_offset.shape[0], max_offset.cpu().numpy()))
-            out_offset = torch.LongTensor(
-                [torch.tensor(random.choice(range(start, end)) if end > start else 0) for start, end in offset_ranges]
-            ).to(y_lengths)
-            attn_cut = torch.zeros(attn.shape[0], attn.shape[1], out_size, dtype=attn.dtype, device=attn.device)
-            y_cut = torch.zeros(y.shape[0], self.n_feats, out_size, dtype=y.dtype, device=y.device)
-
-            y_cut_lengths = []
-            for i, (y_, out_offset_) in enumerate(zip(y, out_offset)):
-                y_cut_length = out_size + (y_lengths[i] - out_size).clamp(None, 0)
-                y_cut_lengths.append(y_cut_length)
-                cut_lower, cut_upper = out_offset_, out_offset_ + y_cut_length
-                y_cut[i, :, :y_cut_length] = y_[:, cut_lower:cut_upper]
-                attn_cut[i, :, :y_cut_length] = attn[i, :, cut_lower:cut_upper]
-
-            y_cut_lengths = torch.LongTensor(y_cut_lengths)
-            y_cut_mask = sequence_mask(y_cut_lengths).unsqueeze(1).to(y_mask)
-
-            attn = attn_cut
-            y = y_cut
-            y_mask = y_cut_mask
-
         # Align encoded text with mel-spectrogram and get mu_y segment
         mu_y = torch.matmul(attn.squeeze(1).transpose(1, 2), mu_x.transpose(1, 2))
         mu_y = mu_y.transpose(1, 2)
-        log_y = torch.matmul(attn.squeeze(1).transpose(1, 2), log_x.transpose(1, 2))
-        log_y = log_y.transpose(1, 2)
 
         # Compute loss of the decoder
-        mu_y_cat = torch.cat([mu_y, log_y], dim=1)
-        z_spec_cat = torch.cat([m_spec, logs_spec], dim=1)
 
-        diff_loss, _ = self.decoder.compute_loss(x1=z_spec_cat, mask=y_mask, mu=mu_y_cat, spks=spks, cond=cond)
+        diff_loss, _ = self.decoder.compute_loss(x1=z_spec, mask=y_mask, mu=mu_y.detach(), spks=spks, cond=cond)
 
-        prior_loss = torch.sum(0.5 * ((z_spec_cat - mu_y_cat) ** 2 + math.log(2 * math.pi)) * y_mask)
+        prior_loss = torch.sum(0.5 * ((z_spec - mu_y) ** 2 + math.log(2 * math.pi)) * y_mask)
         prior_loss = prior_loss / (torch.sum(y_mask) * self.n_feats)
 
-        SEGMENT_SIZE = 120
+        SEGMENT_SIZE = y_lengths.min()//2
         output_sliced, ids_slice = commons.rand_slice_segments(
                 z_spec, y_lengths , segment_size=SEGMENT_SIZE
             )
         y_slice = commons.slice_segments(
                 y, ids_slice, SEGMENT_SIZE)
 
-        output_sliced = self.hifigan(output_sliced)
+        output_sliced_wav = self.hifigan(output_sliced)
         
         y_hat_mel = self.wav2mel(
-                    output_sliced.squeeze(1),
+                    output_sliced_wav.squeeze(1),
                     num_mels=80,
                     sampling_rate=22050,
                     hop_size=256,
