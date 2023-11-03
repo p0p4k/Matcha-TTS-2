@@ -170,7 +170,7 @@ class MatchaTTS(BaseLightningClass):  # 🍵
             "encoder_outputs": encoder_outputs,
             "decoder_outputs": mel,
             "attn": attn[:, :, :y_max_length],
-            # "mel": mel
+            "hifigan_out": hifigan_out,
             "mel": denormalize(mel, self.mel_mean, self.mel_std),
             "mel_lengths": y_lengths,
             "rtf": rtf,
