@@ -4,7 +4,8 @@
 ## WIP: Matcha-TTS-2
 ## 🍵 Matcha-TTS-2: A fast E2E TTS architecture with conditional flow matching (not fast enough for training yet xD) 
 
-[x] added experimental E2E TTS support; use min_memory config for training
+[x] added experimental E2E TTS support; doing some small training to verify results. Expect me to update this model completely by end of November,23.
+[x] if anybody willing to help me understand cfm quicker, would be great. I have few questions. ty
 ![Alt text](image.png)
 ### [Shivam Mehta](https://www.kth.se/profile/smehta), [Ruibo Tu](https://www.kth.se/profile/ruibo), [Jonas Beskow](https://www.kth.se/profile/beskow), [Éva Székely](https://www.kth.se/profile/szekely), and [Gustav Eje Henter](https://people.kth.se/~ghe/)
 
