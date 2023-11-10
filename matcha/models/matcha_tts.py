@@ -23,6 +23,8 @@ from matcha.utils.audio import mel_spectrogram
 from torch.nn import functional as F
 
 from matcha.hifigan.models import Generator as HiFiGAN
+from matcha.hifigan.models import MultiPeriodDiscriminator
+from matcha.hifigan.models import discriminator_loss, generator_loss, feature_loss
 from matcha.hifigan.config import v1
 from matcha.hifigan.env import AttrDict
 from matcha.hifigan.meldataset import mel_spectrogram
@@ -88,7 +90,7 @@ class MatchaTTS(BaseLightningClass):  # 🍵
             n_spks=n_spks,
             spk_emb_dim=spk_emb_dim,
         )
-
+        self.hifigan_disc = MultiPeriodDiscriminator()
         self.update_data_statistics(data_statistics)
 
     @torch.inference_mode()
@@ -168,7 +170,7 @@ class MatchaTTS(BaseLightningClass):  # 🍵
 
         return {
             "encoder_outputs": encoder_outputs,
-            "decoder_outputs": mel,
+            "decoder_outputs": decoder_outputs,
             "attn": attn[:, :, :y_max_length],
             "hifigan_out": hifigan_out,
             "mel": denormalize(mel, self.mel_mean, self.mel_std),
@@ -176,7 +178,7 @@ class MatchaTTS(BaseLightningClass):  # 🍵
             "rtf": rtf,
         }
 
-    def forward(self, x, x_lengths, y, y_lengths, spks=None, out_size=None, cond=None):
+    def forward(self, x, x_lengths, y, y_lengths, spks=None, out_size=None, cond=None, wav=None, wav_lengths=None):
         """
         Computes 3 losses:
             1. duration loss: loss between predicted token durations and those extracted by Monotinic Alignment Search (MAS).
@@ -207,10 +209,12 @@ class MatchaTTS(BaseLightningClass):  # 🍵
         
         y_max_length = y.shape[-1]
         z_spec, spec_mask = self.enc_spec(y, y_lengths, g=spks.unsqueeze(1).transpose(1,2))
-        z_spec = z_spec * spec_mask
+        
         y_mask = sequence_mask(y_lengths, y_max_length).unsqueeze(1).to(x_mask)
         attn_mask = x_mask.unsqueeze(-1) * y_mask.unsqueeze(2)
-
+        # z_spec = y
+        spec_mask = y_mask
+        z_spec = z_spec * spec_mask
         with torch.no_grad():
         # negative cross-entropy
             s_p_sq_r = torch.ones_like(mu_x) # [b, d, t]
@@ -242,20 +246,30 @@ class MatchaTTS(BaseLightningClass):  # 🍵
 
         # Compute loss of the decoder
 
-        diff_loss, _ = self.decoder.compute_loss(x1=z_spec, mask=y_mask, mu=mu_y.detach(), spks=spks, cond=cond)
+        diff_loss, _ = self.decoder.compute_loss(x1=z_spec.detach(), mask=y_mask, mu=mu_y, spks=spks, cond=cond)
 
-        prior_loss = torch.sum(0.5 * ((z_spec - mu_y) ** 2 + math.log(2 * math.pi)) * y_mask)
-        prior_loss = prior_loss / (torch.sum(y_mask) * self.n_feats)
-
-        SEGMENT_SIZE = y_lengths.min()//2
-        output_sliced, ids_slice = commons.rand_slice_segments(
+        # prior_loss = torch.sum(0.5 * ((z_spec - mu_y) ** 2 + math.log(2 * math.pi)) * y_mask)
+        # prior_loss = prior_loss / (torch.sum(y_mask) * self.n_feats)
+        prior_loss = torch.FloatTensor([0.0]).to(z_spec.device)
+        z_spec = 1e-4 * torch.randn_like(z_spec) + z_spec
+        SEGMENT_SIZE = 8192//256
+        z_sliced, ids_slice = commons.rand_slice_segments(
                 z_spec, y_lengths , segment_size=SEGMENT_SIZE
             )
+        
+
+        output_sliced_wav = self.hifigan(z_sliced)
+        # real_wav_slice = commons.slice_segments(
+        #         wav, ids_slice * 256, 4096
+        #     ) 
+        # y_d_hat_r, y_d_hat_g, _, _ = self.hifigan_disc(real_wav_slice, output_sliced_wav.detach())
+        # loss_disc, losses_disc_r, losses_disc_g = discriminator_loss(y_d_hat_r, y_d_hat_g)
+        # y_d_hat_r, y_d_hat_g, fmap_r, fmap_g = self.hifigan_disc(real_wav_slice, output_sliced_wav)
+        # loss_gen, losses_gen = generator_loss(y_d_hat_g)
+        # loss_fm = feature_loss(fmap_r, fmap_g)
+        # loss_gen += loss_fm
         y_slice = commons.slice_segments(
                 y, ids_slice, SEGMENT_SIZE)
-
-        output_sliced_wav = self.hifigan(output_sliced)
-        
         y_hat_mel = self.wav2mel(
                     output_sliced_wav.squeeze(1),
                     num_mels=80,
@@ -270,6 +284,6 @@ class MatchaTTS(BaseLightningClass):  # 🍵
 
         # denorm_y = denormalize(y_slice, self.mel_mean, self.mel_std)
         y_hat_mel = normalize(y_hat_mel, self.mel_mean, self.mel_std)
-        mel_loss = F.l1_loss(y_slice, y_hat_mel) * 45.0
-        
-        return dur_loss, prior_loss, diff_loss, mel_loss, y_hat_mel, y_slice
+        mel_loss = F.l1_loss(y_slice, y_hat_mel)
+        loss_disc, loss_gen = torch.Tensor([0.0]).to(z_spec.device), torch.Tensor([0.0]).to(z_spec.device)
+        return dur_loss, prior_loss, diff_loss, mel_loss*45, loss_disc, loss_gen, y_hat_mel, y_slice
