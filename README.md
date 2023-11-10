@@ -8,6 +8,8 @@
 [x] if anybody willing to help me understand cfm quicker, would be great. I have few questions. ty
 [x] I am trying 2 things -> (1) cfm decoder intermideiate output gives mel, give the mel to hifigan and compare hifigan's output's mel with real mel and also use prior loss to force textenc to be near the decoder's output (Which again is the mel). (2) a more "learnable" flexible model with freedom at decoder out, no prior restrictions and just final output mel (to make hifigan robust to noise, we add small sigma to decoder output while training), ATM the code is (2) and i think it is better.
 ![image](https://github.com/p0p4k/Matcha-TTS-2/assets/8834712/560de995-8fbb-4155-8d1f-c8ed4200ddd6)
+output from (2 ..still training) 
+![image](https://github.com/p0p4k/Matcha-TTS-2/assets/8834712/1ce7bef4-96f4-4ffd-8041-a9d2cacfd85e)
 
 ### [Shivam Mehta](https://www.kth.se/profile/smehta), [Ruibo Tu](https://www.kth.se/profile/ruibo), [Jonas Beskow](https://www.kth.se/profile/beskow), [Éva Székely](https://www.kth.se/profile/szekely), and [Gustav Eje Henter](https://people.kth.se/~ghe/)
 
