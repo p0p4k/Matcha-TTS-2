@@ -56,16 +56,18 @@ class BaseLightningClass(LightningModule, ABC):
     def get_losses(self, batch):
         x, x_lengths = batch["x"], batch["x_lengths"]
         y, y_lengths = batch["y"], batch["y_lengths"]
-        
+        # wav, wav_lengths = batch["wav"], batch["wav_lengths"]
         spks = batch["spks"]
         # print("y", y.shape)
-        dur_loss, prior_loss, diff_loss, mel_loss, y_hat_mel, y_slice = self(
+        dur_loss, prior_loss, diff_loss, mel_loss, loss_disc, loss_gen, y_hat_mel, y_slice = self(
             x=x,
             x_lengths=x_lengths,
             y=y,
             y_lengths=y_lengths,
             spks=spks,
             out_size=self.out_size,
+            # wav=wav,
+            # wav_lengths=wav_lengths,
         )
         return (
             {
@@ -73,6 +75,8 @@ class BaseLightningClass(LightningModule, ABC):
             "prior_loss": prior_loss,
             "diff_loss": diff_loss,
             "mel_loss": mel_loss,
+            "loss_disc": loss_disc,
+            "loss_gen": loss_gen,
             },
             {
             "y_hat_mel": y_hat_mel,
@@ -127,7 +131,23 @@ class BaseLightningClass(LightningModule, ABC):
             logger=True,
             sync_dist=True,
         )
-
+        self.log(
+            "sub_loss/train_loss_disc",
+            loss_dict["loss_disc"],
+            on_step=True,
+            on_epoch=True,
+            logger=True,
+            sync_dist=True,
+        )
+        self.log(
+            "sub_loss/train_loss_gen",
+            loss_dict["loss_gen"],
+            on_step=True,
+            on_epoch=True,
+            logger=True,
+            sync_dist=True,
+        )
+        
         total_loss = sum(loss_dict.values())
         self.log(
             "loss/train",
@@ -186,6 +206,22 @@ class BaseLightningClass(LightningModule, ABC):
             logger=True,
             sync_dist=True,
         )
+        self.log(
+            "sub_loss/val_loss_disc",
+            loss_dict["loss_disc"],
+            on_step=True,
+            on_epoch=True,
+            logger=True,
+            sync_dist=True,
+        )
+        self.log(
+            "sub_loss/val_loss_gen",
+            loss_dict["loss_gen"],
+            on_step=True,
+            on_epoch=True,
+            logger=True,
+            sync_dist=True,
+        )
 
         total_loss = sum(loss_dict.values())
         self.log(
@@ -210,22 +246,12 @@ class BaseLightningClass(LightningModule, ABC):
                     self.current_epoch,
                     dataformats="HWC",
                 )
+
         return total_loss
 
     def on_validation_end(self) -> None:
         if self.trainer.is_global_zero:
             one_batch = next(iter(self.trainer.val_dataloaders))
-            # print("one_batch", one_batch["x"].shape, one_batch["y"].shape)
-            # with torch.no_grad():
-            #     self.enccodec.eval()
-                
-            #     self.enccodec.model.to(one_batch["x"].device)
-            #     one_batch["y"], _, _ = self.enccodec(one_batch["y"], return_encoded = True)
-            # one_batch["y_lengths"] = torch.ceil(one_batch["y_lengths"] / 320).long()
-            # if one_batch["y_lengths"].max()%2 == 1:
-            #     one_batch["y_lengths"] = one_batch["y_lengths"] - 1
-            #     one_batch["y"] = one_batch["y"][:,:,:-1]
-            # one_batch["y"] = one_batch["y"].squeeze(1).transpose(1,2)
 
             if self.current_epoch == 0:
                 log.debug("Plotting original samples")
@@ -244,7 +270,7 @@ class BaseLightningClass(LightningModule, ABC):
                 x_lengths = one_batch["x_lengths"][i].unsqueeze(0).to(self.device)
                 spks = one_batch["spks"][i].unsqueeze(0).to(self.device) if one_batch["spks"] is not None else None
                 output = self.synthesise(x[:, :x_lengths], x_lengths, n_timesteps=10, spks=spks)
-                y_enc, y_dec = output["encoder_outputs"], output["decoder_outputs"]
+                y_enc, y_dec, y_mel = output["encoder_outputs"], output["decoder_outputs"], output["mel"]
                 attn = output["attn"]
                 self.logger.experiment.add_image(
                     f"generated_enc/{i}",
@@ -255,6 +281,12 @@ class BaseLightningClass(LightningModule, ABC):
                 self.logger.experiment.add_image(
                     f"generated_dec/{i}",
                     plot_tensor(y_dec.squeeze().cpu()),
+                    self.current_epoch,
+                    dataformats="HWC",
+                )
+                self.logger.experiment.add_image(
+                    f"generated_mel/{i}",
+                    plot_tensor(y_mel.squeeze().cpu()),
                     self.current_epoch,
                     dataformats="HWC",
                 )
